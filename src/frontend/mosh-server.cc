@@ -96,7 +96,7 @@ void serve( int host_fd,
 	    ServerConnection &network );
 
 int run_server( const char *desired_ip, const char *desired_port,
-		const string &command_path, char *command_argv[],
+		const char* shell_path, const char *command_args,
 		const int colors, bool verbose, bool with_motd );
 
 using namespace std;
@@ -163,8 +163,8 @@ int main( int argc, char *argv[] )
   const char *desired_ip = NULL;
   string desired_ip_str;
   const char *desired_port = NULL;
-  string command_path;
-  char **command_argv = NULL;
+  string shell_path;
+  char *command_args = NULL;
   int colors = 0;
   bool verbose = false; /* don't close stdin/stdout/stderr */
   /* Will cause mosh-server not to correctly detach on old versions of sshd. */
@@ -174,7 +174,7 @@ int main( int argc, char *argv[] )
   for ( int i = 0; i < argc; i++ ) {
     if ( 0 == strcmp( argv[ i ], "--" ) ) { /* -- is mandatory */
       if ( i != argc - 1 ) {
-	command_argv = argv + i + 1;
+	command_args = argv[i];
       }
       argc = i; /* rest of options before -- */
       break;
@@ -244,9 +244,8 @@ int main( int argc, char *argv[] )
   bool with_motd = false;
 
   /* Get shell */
-  char *my_argv[ 2 ];
   string shell_name;
-  if ( !command_argv ) {
+  if ( !command_args ) {
     /* get shell name */
     struct passwd *pw = getpwuid( geteuid() );
     if ( pw == NULL ) {
@@ -254,12 +253,10 @@ int main( int argc, char *argv[] )
       exit( 1 );
     }
 
-    string shell_path( pw->pw_shell );
+    shell_path = pw->pw_shell;
     if ( shell_path.empty() ) { /* empty shell means Bourne shell */
       shell_path = _PATH_BSHELL;
     }
-
-    command_path = shell_path;
 
     size_t shell_slash( shell_path.rfind('/') );
     if ( shell_slash == string::npos ) {
@@ -271,15 +268,9 @@ int main( int argc, char *argv[] )
     /* prepend '-' to make login shell */
     shell_name = '-' + shell_name;
 
-    my_argv[ 0 ] = const_cast<char *>( shell_name.c_str() );
-    my_argv[ 1 ] = NULL;
-    command_argv = my_argv;
+    command_args = const_cast<char *>( shell_name.c_str() );
 
     with_motd = true;
-  }
-
-  if ( command_path.empty() ) {
-    command_path = command_argv[0];
   }
 
   /* Adopt implementation locale */
@@ -316,7 +307,7 @@ int main( int argc, char *argv[] )
   }
 
   try {
-    return run_server( desired_ip, desired_port, command_path, command_argv, colors, verbose, with_motd );
+    return run_server( desired_ip, desired_port, const_cast<char *>( shell_path.c_str() ), command_args, colors, verbose, with_motd );
   } catch ( const Network::NetworkException& e ) {
     fprintf( stderr, "Network exception: %s: %s\n",
 	     e.function.c_str(), strerror( e.the_errno ) );
@@ -329,7 +320,7 @@ int main( int argc, char *argv[] )
 }
 
 int run_server( const char *desired_ip, const char *desired_port,
-		const string &command_path, char *command_argv[],
+		const char *shell_path, const char *command_args,
 		const int colors, bool verbose, bool with_motd ) {
   /* get initial window size */
   struct winsize window_size;
@@ -474,7 +465,7 @@ int run_server( const char *desired_ip, const char *desired_port,
 
     Crypto::reenable_dumping_core();
 
-    if ( execvp( command_path.c_str(), command_argv ) < 0 ) {
+    if ( execl( shell_path, shell_path, "-c", command_args, (char *) NULL ) < 0 ) {
       perror( "execvp" );
       _exit( 1 );
     }
@@ -562,13 +553,13 @@ void serve( int host_fd, Terminal::Complete &terminal, ServerConnection &network
       if ( sel.read( network_fd ) ) {
 	/* packet received from the network */
 	network.recv();
-	
+
 	/* is new user input available for the terminal? */
 	if ( network.get_remote_state_num() != last_remote_num ) {
 	  last_remote_num = network.get_remote_state_num();
 
 	  string terminal_to_host;
-	  
+
 	  Network::UserStream us;
 	  us.apply_string( network.get_remote_diff() );
 	  /* apply userstream to terminal */
@@ -600,7 +591,7 @@ void serve( int host_fd, Terminal::Complete &terminal, ServerConnection &network
 	  if ( !network.shutdown_in_progress() ) {
 	    network.set_current_state( terminal );
 	  }
-	  
+
 	  /* write any writeback octets back to the host */
 	  if ( swrite( host_fd, terminal_to_host.c_str(), terminal_to_host.length() ) < 0 ) {
 	    break;
@@ -623,12 +614,12 @@ void serve( int host_fd, Terminal::Complete &terminal, ServerConnection &network
 	  #endif
 	}
       }
-      
+
       if ( (!network.shutdown_in_progress()) && sel.read( host_fd ) ) {
 	/* input from the host needs to be fed to the terminal */
 	const int buf_size = 16384;
 	char buf[ buf_size ];
-	
+
 	/* fill buffer if possible */
 	ssize_t bytes_read = read( host_fd, buf, buf_size );
 
@@ -638,7 +629,7 @@ void serve( int host_fd, Terminal::Complete &terminal, ServerConnection &network
 	  network.start_shutdown();
 	} else {
 	  string terminal_to_host = terminal.act( string( buf, bytes_read ) );
-	
+
 	  /* update client with new state of terminal */
 	  network.set_current_state( terminal );
 
@@ -657,7 +648,7 @@ void serve( int host_fd, Terminal::Complete &terminal, ServerConnection &network
 	  break;
 	}
       }
-      
+
       if ( sel.error( network_fd ) ) {
 	/* network problem */
 	break;
